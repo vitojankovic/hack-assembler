@@ -2,9 +2,27 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <ctype.h>
 
 //! STEPS: First manage to output the entire assembly file context line by line into cmd and pass each into a function
 //! called assemble
+
+
+//? Table for symbols
+typedef struct {
+  char name[64];
+  int address;
+} SymbolEntry;
+
+typedef struct {
+  SymbolEntry entries[1000];
+  int count;
+} SymbolTable;
+
+void st_init(SymbolTable *t);
+void st_add(SymbolTable *t, const char *name, int addr);
+int st_contains(SymbolTable *t, const char *name);
+int st_get_address(SymbolTable *t, const char *name);
 
 
 // Translates dest token ("D", "M", "AMD", etc.) to 3 bits
@@ -17,8 +35,17 @@ void parse_jump(char *jump, char *result);
 void parse_comp(char *comp, char *result);
 
 
-void dismantle(FILE *pSource, FILE *pOutput);
-char* assemble(char line[]);
+void dismantle(FILE *pSource, FILE *pOutput, SymbolTable *t);
+char* assemble(char line[], SymbolTable *t, int *nextVarAdress);
+
+void strip_comment_newline(char *line);
+void trim(char *line);
+int is_blank(char *line);
+
+//? Record all labels
+void first_pass(FILE *pSource, SymbolTable *t);
+
+
 
 int main()
 {
@@ -48,7 +75,12 @@ int main()
     return 1;
   }
 
-  dismantle(pSource, pOutput);
+  SymbolTable table;
+  st_init(&table);
+  first_pass(pSource, &table);
+  rewind(pSource);
+
+  dismantle(pSource, pOutput, &table);
 
 
   fclose(pSource);
@@ -57,36 +89,48 @@ int main()
   return 0;
 }
 
-void dismantle(FILE *pSource, FILE *pOutput)
+void dismantle(FILE *pSource, FILE *pOutput, SymbolTable *t)
 {
   //? Logic for taking an input file row as a string and performing conversion and outputing
   char line[256];
+  int nextVarAddress = 16;
 
   while(fgets(line, sizeof(line), pSource) != NULL){
-    char *binaryCode = assemble(line);
+    char *binaryCode = assemble(line, t, &nextVarAddress);
     if(binaryCode != NULL){
       fprintf(pOutput, "%s\n", binaryCode);
     }
   }
 }
 
-char* assemble(char line[]){
+char* assemble(char line[], SymbolTable *t, int *nextVarAddress){
   //? 1st step: look at the first character, if @ its an A instruction, if not its a C instruction
   //? Handling A instructions: set first bit to 0 and convert from decimal to binary the rest 15 characters
   //? Handling C instructions: 
 
   static char result[17];
 
-    for (int i = 0; line[i] != '\0'; i++) {
-      if (line[i] == '/' || line[i] == '\n' || line[i] == '\r') {
-        line[i] = '\0'; // Truncate string here!
-        break;
-      }
-    }
+  strip_comment_newline(line);
+  trim(line);
 
-    if(line[0] == '\0'){
-      return NULL;
+  if(is_blank(line)){
+    return NULL;
+  }
+
+  if(line[0] == '('){
+    return NULL;
+  }
+
+  for (int i = 0; line[i] != '\0'; i++) {
+    if (line[i] == '/' || line[i] == '\n' || line[i] == '\r') {
+      line[i] = '\0'; // Truncate string here!
+      break;
     }
+  }
+
+  if(line[0] == '\0'){
+    return NULL;
+  }
 
   if(line[0] == '@'){
     //! A instruction
@@ -101,6 +145,20 @@ char* assemble(char line[]){
     //* Convert from string to int using atoi(&line[i])
 
     int addressNumber = atoi(&line[1]);
+
+
+    //? Checks if @x is a number or a letter
+    char *symbol = &line[1];
+    if (isdigit((unsigned char)symbol[0])) {
+      addressNumber = atoi(symbol);
+    } else {
+      if (!st_contains(t, symbol)) {
+        //? first time we've ever seen this variable name -> give it a fresh RAM slot
+        st_add(t, symbol, *nextVarAddress);
+        (*nextVarAddress)++;
+      }
+      addressNumber = st_get_address(t, symbol);
+    }
 
     int i = 1;
     int counter = 0;
@@ -190,13 +248,13 @@ void parse_comp(char *comp, char *result) {
     else if (strcmp(comp, "-1") == 0)                       { strcpy(&result[4], "111010"); }
     else if (strcmp(comp, "D") == 0)                        { strcpy(&result[4], "001100"); }
     else if (strcmp(comp, "A") == 0 || strcmp(comp, "M") == 0) 
-                                                            { strcpy(&result[4], "110000"); } // FIXED: was "011000"
+                                                            { strcpy(&result[4], "110000"); }
     else if (strcmp(comp, "!D") == 0)                       { strcpy(&result[4], "001101"); }
     else if (strcmp(comp, "!A") == 0 || strcmp(comp, "!M") == 0) 
-                                                            { strcpy(&result[4], "110001"); } // FIXED: was "011001"
+                                                            { strcpy(&result[4], "110001"); }
     else if (strcmp(comp, "-D") == 0)                       { strcpy(&result[4], "001111"); }
     else if (strcmp(comp, "-A") == 0 || strcmp(comp, "-M") == 0) 
-                                                            { strcpy(&result[4], "110011"); } // FIXED: was "011001"
+                                                            { strcpy(&result[4], "110011"); }
     else if (strcmp(comp, "D+1") == 0)                      { strcpy(&result[4], "011111"); }
     else if (strcmp(comp, "A+1") == 0 || strcmp(comp, "M+1") == 0) 
                                                             { strcpy(&result[4], "110111"); }
@@ -236,4 +294,99 @@ void parse_jump(char *jump, char *result) {
     else if (strcmp(jump, "JLE") == 0) { result[13]='1'; result[14]='1'; result[15]='0'; }
     else if (strcmp(jump, "JMP") == 0) { result[13]='1'; result[14]='1'; result[15]='1'; }
     else { result[13]='0'; result[14]='0'; result[15]='0'; }
+}
+
+
+
+void first_pass(FILE *pSource, SymbolTable *t){
+  char line[256];
+  int romAddress = 0;
+
+  while(fgets(line, sizeof(line), pSource) != NULL){
+    strip_comment_newline(line);
+    trim(line);
+
+    if(is_blank(line)){
+      continue;
+    }
+
+    if(line[0] == '('){
+      //? (LOOP)
+      int len=strlen(line);
+      char label[64];
+      strncpy(label, line + 1, len-2);
+      label[len - 2] = '\0';
+
+      st_add(t, label, romAddress);
+    }
+    else{
+      romAddress++;
+    }
+  }
+}
+
+void strip_comment_newline(char *line){
+  for(int i = 0; line[i] != '\0'; i++){
+    if(line[i] == '/' || line[i] == '\n' || line[i] == '\r'){
+      line[i] = '\0';
+      break;
+    }
+  }
+}
+
+void trim(char *line){
+  int len = strlen(line);
+  while(len > 0 && isspace((unsigned char)line[len - 1])){
+    line[--len] = '\0';
+  }
+}
+
+void st_init(SymbolTable *t)
+{
+  t->count = 0;
+
+  st_add(t, "SP", 0);
+  st_add(t, "LCL", 1);
+  st_add(t, "ARG", 2);
+  st_add(t, "THIS", 3);
+  st_add(t, "THAT", 4);
+  st_add(t, "SCREEN", 16384);
+  st_add(t, "KBD", 24576);
+
+  char regName[4];
+  for (int i = 0; i <= 15; i++) {
+    sprintf(regName, "R%d", i);
+    st_add(t, regName, i);
+  }
+}
+
+void st_add(SymbolTable *t, const char *name, int addr)
+{
+  strcpy(t->entries[t->count].name, name);
+  t->entries[t->count].address = addr;
+  t->count++;
+}
+
+int st_contains(SymbolTable *t, const char *name)
+{
+  for (int i = 0; i < t->count; i++) {
+    if (strcmp(t->entries[i].name, name) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int st_get_address(SymbolTable *t, const char *name)
+{
+  for (int i = 0; i < t->count; i++) {
+    if (strcmp(t->entries[i].name, name) == 0) {
+      return t->entries[i].address;
+    }
+  }
+  return -1;
+}
+
+int is_blank(char *line){
+  return line[0] == '\0';
 }
