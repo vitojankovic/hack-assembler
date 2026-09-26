@@ -339,6 +339,14 @@ void trim(char *line){
   while(len > 0 && isspace((unsigned char)line[len - 1])){
     line[--len] = '\0';
   }
+
+  int start = 0;
+  while(line[start] != '\0' && isspace((unsigned char)line[start])){
+    start++;
+  }
+  if(start > 0){
+    memmove(line, line + start, strlen(line + start) + 1);
+  }
 }
 
 void st_init(SymbolTable *t)
